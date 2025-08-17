@@ -1,0 +1,499 @@
+import os
+import logging
+import requests
+import json
+from datetime import datetime
+from flask import Flask, request, jsonify
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# WhatsApp API Configuration
+WHATSAPP_ACCESS_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN')
+PHONE_NUMBER_ID = os.getenv('PHONE_NUMBER_ID')
+BUSINESS_ACCOUNT_ID = os.getenv('BUSINESS_ACCOUNT_ID')
+VERIFY_TOKEN = os.getenv('VERIFY_TOKEN')
+API_VERSION = 'v17.0'
+BASE_URL = f'https://graph.facebook.com/{API_VERSION}'
+
+# Store user sessions (in production, use database)
+user_sessions = {}
+
+# Define conversation flows
+conversation_flows = {
+    'greeting': ['hello', 'hi', 'hey', 'start', 'good morning', 'good afternoon', 'good evening', 'salam', 'assalam'],
+    'services': ['service', 'what do you do', 'help', 'services', 'offer', 'water', 'product'],
+    'pricing': ['price', 'cost', 'how much', 'pricing', 'rates', 'money'],
+    'contact': ['contact', 'phone', 'email', 'address', 'location', 'where'],
+    'order': ['order', 'buy', 'purchase', 'book', 'want', 'need'],
+    'goodbye': ['bye', 'goodbye', 'see you', 'thanks', 'thank you', 'exit']
+}
+
+# Define responses
+responses = {
+    'greeting': """?? Welcome to Oxy Plus Water! 
+
+We provide premium quality water solutions in UAE.
+
+?? How can we help you today?
+
+You can ask about:
+• Our water products
+• Pricing information  
+• Contact details
+• Place an order""",
+    
+    'services': """?? Oxy Plus Water Services:
+
+?? **Residential Services:**
+• Home water delivery
+• Water bottles (5L, 10L, 20L)
+• Water dispensers rental
+
+?? **Commercial Services:**  
+• Office water supply
+• Bulk water delivery
+• Water cooler maintenance
+
+?? **Industrial Services:**
+• Large volume supply
+• Custom delivery schedules
+• Water quality testing
+
+What service interests you most?""",
+
+    'pricing': """?? Oxy Plus Water Pricing:
+
+?? **Home Delivery:**
+• 5L bottles: AED 8 each
+• 10L bottles: AED 15 each  
+• 20L bottles: AED 25 each
+
+?? **Office Packages:**
+• Basic: AED 200/month
+• Premium: AED 350/month
+• Enterprise: Custom pricing
+
+?? Contact us for:
+• Bulk discounts
+• Custom packages
+• Special rates
+
+Would you like more details about any package?""",
+
+    'contact': """?? Contact Oxy Plus Water:
+
+**Phone:** +971 600 569699
+**Email:** info@oxypluswater.ae
+**Address:** Dubai, UAE
+
+?? **Business Hours:**
+• Sunday - Thursday: 8AM - 8PM
+• Friday - Saturday: 9AM - 6PM
+
+?? **Delivery Areas:**
+• Dubai • Abu Dhabi • Sharjah
+• Ajman • Ras Al Khaimah
+
+How else can we assist you?""",
+
+    'order': """?? Ready to order Oxy Plus Water?
+
+**Please tell us:**
+• Quantity needed (how many bottles?)
+• Delivery location
+• Preferred delivery time
+• Contact number
+
+?? **Quick Order Options:**
+1?? Call: +971 600 569699
+2?? WhatsApp: Send us your details
+3?? Email: info@oxypluswater.ae
+
+Our team will contact you within 30 minutes!""",
+
+    'goodbye': """?? Thank you for choosing Oxy Plus Water!
+
+We appreciate your interest in our premium water services.
+
+?? Remember: Clean water, healthy life!
+
+Feel free to contact us anytime:
+?? WhatsApp: +971 600 569699
+
+Have a wonderful day! ??""",
+
+    'default': """Thank you for contacting Oxy Plus Water! ??
+
+I'm here to help you with information about our premium water services in UAE.
+
+?? **You can ask me about:**
+• Water delivery services
+• Pricing and packages  
+• Contact information
+• Placing an order
+• Our service areas
+
+What would you like to know?"""
+}
+
+class WhatsAppHandler:
+    """Handle WhatsApp API operations"""
+    
+    @staticmethod
+    def send_message(to_number, message_text):
+        """Send text message to WhatsApp user"""
+        try:
+            if not WHATSAPP_ACCESS_TOKEN or not PHONE_NUMBER_ID:
+                logger.error("Missing WhatsApp configuration")
+                return None
+                
+            url = f"{BASE_URL}/{PHONE_NUMBER_ID}/messages"
+            
+            headers = {
+                'Authorization': f'Bearer {WHATSAPP_ACCESS_TOKEN}',
+                'Content-Type': 'application/json'
+            }
+            
+            payload = {
+                'messaging_product': 'whatsapp',
+                'to': to_number,
+                'type': 'text',
+                'text': {
+                    'body': message_text
+                }
+            }
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                logger.info(f"Message sent successfully to {to_number}")
+                return response.json()
+            else:
+                logger.error(f"Failed to send message: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error sending message: {str(e)}")
+            return None
+    
+    @staticmethod
+    def send_button_message(to_number, body_text, buttons):
+        """Send interactive button message"""
+        try:
+            url = f"{BASE_URL}/{PHONE_NUMBER_ID}/messages"
+            
+            headers = {
+                'Authorization': f'Bearer {WHATSAPP_ACCESS_TOKEN}',
+                'Content-Type': 'application/json'
+            }
+            
+            payload = {
+                'messaging_product': 'whatsapp',
+                'to': to_number,
+                'type': 'interactive',
+                'interactive': {
+                    'type': 'button',
+                    'body': {
+                        'text': body_text
+                    },
+                    'action': {
+                        'buttons': buttons
+                    }
+                }
+            }
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                logger.info(f"Button message sent successfully to {to_number}")
+                return response.json()
+            else:
+                logger.error(f"Failed to send button message: {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error sending button message: {str(e)}")
+            return None
+
+class ChatBotLogic:
+    """Handle chatbot conversation logic"""
+    
+    @staticmethod
+    def generate_response(message_text, user_number):
+        """Generate appropriate response based on user message"""
+        try:
+            # Convert to lowercase for processing
+            message_lower = message_text.lower().strip()
+            
+            # Update user session
+            ChatBotLogic.update_user_session(user_number, message_text)
+            
+            # Check for conversation flow matches
+            response_type = ChatBotLogic.classify_message(message_lower)
+            
+            # Get appropriate response
+            response = ChatBotLogic.get_response(response_type, user_number)
+            
+            logger.info(f"Generated response for {user_number}: {response_type}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error generating response: {str(e)}")
+            return "I apologize, but I'm having trouble processing your message. Please try again or contact our support team at +971 600 569699."
+    
+    @staticmethod
+    def classify_message(message_text):
+        """Classify user message into conversation categories"""
+        for intent, keywords in conversation_flows.items():
+            for keyword in keywords:
+                if keyword in message_text:
+                    return intent
+        
+        # Check for specific patterns
+        if any(word in message_text for word in ['how', 'what', 'when', 'where', 'why', 'which']):
+            return 'services'
+        
+        if any(word in message_text for word in ['aed', 'dirham', 'dollar', 'money', 'cost', 'expensive']):
+            return 'pricing'
+        
+        if any(word in message_text for word in ['urgent', 'emergency', 'now', 'today', 'asap']):
+            return 'order'
+        
+        return 'default'
+    
+    @staticmethod
+    def get_response(response_type, user_number):
+        """Get response based on classification"""
+        base_response = responses.get(response_type, responses['default'])
+        
+        # Personalize response based on user history
+        user_session = user_sessions.get(user_number, {})
+        interaction_count = user_session.get('interaction_count', 0)
+        
+        if interaction_count > 1 and response_type == 'greeting':
+            base_response = """Welcome back to Oxy Plus Water! ??
+
+Thank you for returning to us. How can we assist you today?
+
+• Check new offers
+• Place another order  
+• Ask questions
+• Get support"""
+        
+        return base_response
+    
+    @staticmethod
+    def handle_button_response(payload, user_number):
+        """Handle interactive button responses"""
+        try:
+            button_responses = {
+                'services_info': responses['services'],
+                'pricing_info': responses['pricing'],
+                'contact_info': responses['contact'],
+                'place_order': responses['order'],
+                'main_menu': responses['greeting']
+            }
+            
+            return button_responses.get(payload, "Thank you for your selection. How else can I help you?")
+            
+        except Exception as e:
+            logger.error(f"Error handling button response: {str(e)}")
+            return "Thank you for your selection. How can I assist you further?"
+    
+    @staticmethod
+    def update_user_session(user_number, message):
+        """Update user session data"""
+        if user_number not in user_sessions:
+            user_sessions[user_number] = {
+                'first_contact': datetime.now().isoformat(),
+                'interaction_count': 0,
+                'messages': []
+            }
+        
+        session = user_sessions[user_number]
+        session['interaction_count'] += 1
+        session['last_message'] = datetime.now().isoformat()
+        session['messages'].append({
+            'timestamp': datetime.now().isoformat(),
+            'message': message
+        })
+        
+        # Keep only last 5 messages to manage memory
+        if len(session['messages']) > 5:
+            session['messages'] = session['messages'][-5:]
+
+# Flask Routes
+@app.route('/')
+def home():
+    """Health check endpoint"""
+    return jsonify({
+        "message": "Oxy Plus Water WhatsApp Bot is running! ??",
+        "status": "active",
+        "version": "1.0.0",
+        "business": "Oxy Plus Water UAE"
+    })
+
+@app.route('/health')
+def health():
+    """Health check for monitoring"""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/webhook', methods=['GET'])
+def verify_webhook():
+    """Webhook verification endpoint"""
+    try:
+        verify_token = VERIFY_TOKEN
+        
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
+        
+        logger.info(f"Webhook verification attempt - Mode: {mode}, Token match: {token == verify_token}")
+        
+        if mode == 'subscribe' and token == verify_token:
+            logger.info("Webhook verified successfully! ?")
+            return challenge
+        else:
+            logger.warning("Webhook verification failed ?")
+            return "Forbidden", 403
+            
+    except Exception as e:
+        logger.error(f"Error in webhook verification: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/webhook', methods=['POST'])
+def handle_webhook():
+    """Handle incoming WhatsApp messages"""
+    try:
+        data = request.get_json()
+        logger.info(f"Received webhook data: {json.dumps(data, indent=2)}")
+        
+        if data.get('object') == 'whatsapp_business_account':
+            for entry in data.get('entry', []):
+                for change in entry.get('changes', []):
+                    if change.get('field') == 'messages':
+                        value = change.get('value', {})
+                        
+                        # Handle incoming messages
+                        messages = value.get('messages', [])
+                        for message in messages:
+                            logger.info(f"Processing message: {message}")
+                            process_message(message, value)
+                        
+                        # Handle message status updates
+                        statuses = value.get('statuses', [])
+                        for status in statuses:
+                            logger.info(f"Message status update: {status}")
+        
+        return jsonify({"status": "success"}), 200
+    
+    except Exception as e:
+        logger.error(f"Error handling webhook: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+def process_message(message, value):
+    """Process incoming message and send response"""
+    try:
+        # Extract message details
+        from_number = message.get('from')
+        message_id = message.get('id')
+        message_type = message.get('type')
+        timestamp = message.get('timestamp')
+        
+        logger.info(f"Processing message from {from_number}, type: {message_type}")
+        
+        if message_type == 'text':
+            text_content = message.get('text', {}).get('body', '')
+            logger.info(f"Text message received: '{text_content}'")
+            
+            # Generate bot response
+            bot_response = ChatBotLogic.generate_response(text_content, from_number)
+            
+            # Send response
+            if bot_response:
+                result = WhatsAppHandler.send_message(from_number, bot_response)
+                if result:
+                    logger.info(f"Response sent successfully to {from_number}")
+                else:
+                    logger.error(f"Failed to send response to {from_number}")
+        
+        elif message_type == 'button':
+            button_payload = message.get('button', {}).get('payload', '')
+            logger.info(f"Button pressed: {button_payload}")
+            
+            bot_response = ChatBotLogic.handle_button_response(button_payload, from_number)
+            
+            if bot_response:
+                WhatsAppHandler.send_message(from_number, bot_response)
+        
+        else:
+            # Handle other message types (image, document, etc.)
+            logger.info(f"Received {message_type} message from {from_number}")
+            default_response = "Thank you for your message! For text inquiries, please send a text message. For urgent matters, call us at +971 600 569699."
+            WhatsAppHandler.send_message(from_number, default_response)
+    
+    except Exception as e:
+        logger.error(f"Error processing message: {str(e)}")
+        # Send error message to user
+        try:
+            error_message = "We're experiencing technical difficulties. Please try again or contact us directly at +971 600 569699."
+            WhatsAppHandler.send_message(from_number, error_message)
+        except:
+            pass
+
+@app.route('/stats')
+def get_stats():
+    """Get basic bot statistics"""
+    try:
+        total_users = len(user_sessions)
+        total_interactions = sum(session.get('interaction_count', 0) for session in user_sessions.values())
+        
+        return jsonify({
+            'total_users': total_users,
+            'total_interactions': total_interactions,
+            'active_sessions': len([s for s in user_sessions.values() if s.get('interaction_count', 0) > 0]),
+            'status': 'running'
+        })
+    except Exception as e:
+        logger.error(f"Error getting stats: {str(e)}")
+        return jsonify({"error": "Error getting statistics"}), 500
+
+if __name__ == '__main__':
+    # Validate required environment variables
+    required_vars = ['WHATSAPP_ACCESS_TOKEN', 'PHONE_NUMBER_ID', 'VERIFY_TOKEN']
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {missing_vars}")
+        logger.error("Please set all required environment variables before starting the app.")
+    else:
+        logger.info("All required environment variables are set ?")
+        logger.info(f"Starting Oxy Plus Water WhatsApp Bot...")
+        logger.info(f"Phone Number ID: {PHONE_NUMBER_ID}")
+        logger.info(f"Verify Token: {VERIFY_TOKEN}")
+    
+    # Get port from environment variable or use default
+    port = int(os.getenv('PORT', 5000))
+    
+    # Start the Flask application
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        debug=False,
+        threaded=True
+    )
